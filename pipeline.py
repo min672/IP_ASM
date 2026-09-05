@@ -522,6 +522,66 @@ def trace_ridge_length(skeleton, y, x, max_len=20):
     return steps
 
 
+def trace_ridge_path(skeleton, y, x, max_len=30):
+    """Like trace_ridge_length, but records the actual path coordinates
+    so straightness can be evaluated."""
+    visited = {(y, x)}
+    path = [(y, x)]
+    current = (y, x)
+    steps = 0
+    while steps < max_len:
+        cy, cx = current
+        next_pixel = None
+        for dy, dx in _NEIGHBOUR_OFFSETS:
+            ny, nx = cy + dy, cx + dx
+            if (0 <= ny < skeleton.shape[0] and 0 <= nx < skeleton.shape[1]
+                    and skeleton[ny, nx] == 1 and (ny, nx) not in visited):
+                next_pixel = (ny, nx)
+                break
+        if next_pixel is None:
+            break
+        visited.add(next_pixel)
+        path.append(next_pixel)
+        current = next_pixel
+        steps += 1
+    return path
+
+
+def straightness_score(path):
+    """
+    1.0 = perfectly straight, lower = more curved. Uses actual cumulative
+    path length (accounts for diagonal steps) as the denominator, not
+    step count, so it is not biased by movement direction.
+    """
+    if len(path) < 2:
+        return 0.0
+    (y0, x0), (y1, x1) = path[0], path[-1]
+    straight_dist = np.hypot(y1 - y0, x1 - x0)
+    walked_dist = sum(
+        np.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
+        for i in range(len(path) - 1)
+    )
+    return straight_dist / walked_dist if walked_dist > 0 else 0.0
+
+
+def filter_by_straightness(minutiae, skeleton, max_straightness=0.97, trace_len=30):
+    """
+    Reject minutiae sitting on an abnormally straight ridge segment.
+    Real fingerprint ridges curve with the natural shape of the finger -
+    a segment that stays almost perfectly straight for a long trace is a
+    strong signal of a geometric artefact (e.g. a convex-hull ROI edge,
+    a cut/obliteration boundary, or any other non-ridge structure) -
+    this works purely on the skeleton itself, with no dependency on
+    Member A/B/C's intermediate data.
+    """
+    survivors = []
+    for m in minutiae:
+        path = trace_ridge_path(skeleton, m["y"], m["x"], max_len=trace_len)
+        if straightness_score(path) < max_straightness:
+            survivors.append(m)
+    return survivors
+
+
 def filter_false_minutiae(minutiae, skeleton, roi_mask=None,
                            min_ridge_length=6, min_pair_distance=10, boundary_margin=10):
     h, w = skeleton.shape
@@ -577,11 +637,15 @@ def filter_by_local_density(minutiae, max_neighbours=5, neighbour_radius=15):
     return survivors
 
 
-def detect_true_minutiae(skeleton, roi_mask=None, max_neighbours=5, neighbour_radius=15, **filter_kwargs):
+def detect_true_minutiae(skeleton, roi_mask=None, max_neighbours=5, neighbour_radius=15,
+                          max_straightness=0.97, straightness_trace_len=30, **filter_kwargs):
     raw = extract_minutiae(skeleton)
     true_minutiae = filter_false_minutiae(raw, skeleton, roi_mask=roi_mask, **filter_kwargs)
     true_minutiae = filter_by_local_density(true_minutiae, max_neighbours=max_neighbours,
                                              neighbour_radius=neighbour_radius)
+    true_minutiae = filter_by_straightness(true_minutiae, skeleton,
+                                            max_straightness=max_straightness,
+                                            trace_len=straightness_trace_len)
     return {
         "raw_count": len(raw),
         "true_count": len(true_minutiae),

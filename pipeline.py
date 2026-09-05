@@ -675,13 +675,45 @@ def compute_quality_score(ridge_density, true_minutiae_count,
     return round((w_density * norm_density + w_minutiae * norm_minutiae) * 100, 2)
 
 
-def evaluate_enhancement(image_a, image_b):
-    """SSIM and PSNR between two same-shape grayscale images."""
+def evaluate_enhancement(image_a, image_b, roi_mask=None):
+    """
+    SSIM and PSNR between two same-shape grayscale images.
+
+    If roi_mask is given, both metrics are restricted to ROI pixels only
+    (SSIM via its full per-pixel map, PSNR via masked MSE) so that a
+    background convention difference (e.g. Member B forcing
+    out-of-ROI pixels to white) does not dominate the score - this
+    measures whether the RIDGES actually got clearer, not whether the
+    background happens to match.
+    """
     if image_a.shape != image_b.shape:
         raise ValueError(f"Shape mismatch: {image_a.shape} vs {image_b.shape}.")
+
+    if roi_mask is None:
+        return {
+            "SSIM": round(float(ssim(image_a, image_b, data_range=255)), 4),
+            "PSNR": round(float(psnr(image_a, image_b, data_range=255)), 2),
+        }
+
+    roi_bool = roi_mask > 0
+    if roi_bool.sum() == 0:
+        # no valid ROI - fall back to whole-image comparison rather than
+        # dividing by zero
+        return {
+            "SSIM": round(float(ssim(image_a, image_b, data_range=255)), 4),
+            "PSNR": round(float(psnr(image_a, image_b, data_range=255)), 2),
+        }
+
+    _, ssim_map = ssim(image_a, image_b, data_range=255, full=True)
+    roi_ssim = float(ssim_map[roi_bool].mean())
+
+    diff = image_a.astype(np.float64) - image_b.astype(np.float64)
+    mse = float(np.mean(diff[roi_bool] ** 2))
+    roi_psnr = float("inf") if mse == 0 else 10 * np.log10((255.0 ** 2) / mse)
+
     return {
-        "SSIM": round(float(ssim(image_a, image_b, data_range=255)), 4),
-        "PSNR": round(float(psnr(image_a, image_b, data_range=255)), 2),
+        "SSIM": round(roi_ssim, 4),
+        "PSNR": round(roi_psnr, 2),
     }
 
 
@@ -700,7 +732,7 @@ def compute_ocl_score(orientation_coherence, roi_mask):
     return float(np.mean(values))
 
 
-def compute_lcs_score(image, roi_mask, block_size=16):
+def compute_lcs_score(image, roi_mask, block_size=16, return_map=False):
     """
     Local Clarity Score (LCS)-style quality score, 0-1.
     Simplified from Chen et al.'s block-wise ridge/valley separation
@@ -710,8 +742,13 @@ def compute_lcs_score(image, roi_mask, block_size=16):
     itself maximizes). A clear ridge/valley pattern gives a high,
     well-separated score; a blurred/noisy block gives a low score
     because the two "classes" barely differ from the overall mean.
+
+    If return_map=True, also returns a full-resolution array with each
+    block filled in with its clarity value (0 outside ROI / skipped
+    blocks), for visualizing WHERE clarity is high or low.
     """
     h, w = image.shape
+    clarity_map = np.zeros((h, w), dtype=np.float32)
     clarity_values = []
     for y in range(0, h - block_size + 1, block_size):
         for x in range(0, w - block_size + 1, block_size):
@@ -734,10 +771,14 @@ def compute_lcs_score(image, roi_mask, block_size=16):
                 n_ridge * (float(ridge_pixels.mean()) - overall_mean) ** 2
                 + n_valley * (float(valley_pixels.mean()) - overall_mean) ** 2
             ) / n_total
-            clarity_values.append(between_var / overall_var)
-    if not clarity_values:
-        return 0.0
-    return float(np.clip(np.mean(clarity_values), 0.0, 1.0))
+            block_clarity = float(np.clip(between_var / overall_var, 0.0, 1.0))
+            clarity_values.append(block_clarity)
+            clarity_map[y:y + block_size, x:x + block_size] = block_clarity
+
+    score = float(np.mean(clarity_values)) if clarity_values else 0.0
+    if return_map:
+        return score, clarity_map
+    return score
 
 
 # --- Image Calibration ------------------------------------------------------
@@ -768,14 +809,25 @@ def build_reliable_mask(roi_mask, orientation_coherence, min_coherence=0.25):
     return (reliable.astype(np.uint8)) * 255
 
 
-def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
+def analyse_member_d(skeleton, roi_mask, raw_gray_resized, member_b_output,
                       orientation_coherence=None, min_coherence=0.25,
                       min_ridge_length=6, min_pair_distance=10, boundary_margin=10,
                       max_neighbours=5, neighbour_radius=15,
                       max_straightness=0.97, straightness_trace_len=30,
                       min_usable_minutiae=12):
     """Full Member D stage: Part 1 (enhancement effectiveness) + Part 2 (matching
-    suitability) + Image Calibration, given the full set of pipeline images."""
+    suitability) + Image Calibration.
+
+    "After" is consistently defined as Member B's FINAL output
+    (member_b_output, i.e. post-Gabor ridge recovery) for every
+    before/after metric (SSIM, PSNR, LCS, OCL) - not an intermediate
+    stage - because Gabor filtering tuned to local ridge
+    orientation/frequency is specifically designed to sharpen ridge
+    clarity and orientation certainty (Hong et al., 1998), so it is
+    the meaningful "after" checkpoint to validate against, matching
+    how enhancement methods are evaluated in the fingerprint
+    enhancement literature.
+    """
     # Restrict analysis to regions Member B was actually confident about,
     # not just "inside the ROI" - this filters out the straight-line and
     # mesh artefacts that come from low-coherence regions being
@@ -807,10 +859,24 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
     quality_score = compute_quality_score(ridge_density, detection_result["true_count"])
     suitable_for_matching = detection_result["true_count"] >= min_usable_minutiae
 
-    enhancement_metrics = evaluate_enhancement(raw_gray_resized, enhanced_image)
+    enhancement_metrics = evaluate_enhancement(raw_gray_resized, member_b_output, roi_mask=roi_mask)
 
-    ocl_score = compute_ocl_score(orientation_coherence, roi_mask) if orientation_coherence is not None else None
-    lcs_score = compute_lcs_score(enhanced_image, roi_mask)
+    # --- OCL and LCS: measured BEFORE (raw) and AFTER (Member B's final
+    # Gabor-recovered output) so preprocessing+recovery effectiveness can
+    # be judged the same way as SSIM/PSNR, not just reported as a single
+    # post-hoc number. Maps are kept for spatial before/after visualization.
+    lcs_before, lcs_before_map = compute_lcs_score(raw_gray_resized, roi_mask, return_map=True)
+    lcs_after, lcs_after_map = compute_lcs_score(member_b_output, roi_mask, return_map=True)
+
+    # "before" = orientation estimated fresh on the raw image
+    # "after"  = orientation estimated fresh on Member B's final output,
+    # so the comparison reflects whether Gabor recovery genuinely
+    # increased orientation certainty, not just the pre-Gabor estimate
+    # that was used to PARAMETERISE the Gabor filter in the first place.
+    _, raw_coherence = estimate_orientation(raw_gray_resized, roi_mask, sigma=4.0)
+    ocl_before = compute_ocl_score(raw_coherence, roi_mask)
+    _, after_coherence = estimate_orientation(member_b_output, roi_mask, sigma=4.0)
+    ocl_after = compute_ocl_score(after_coherence, roi_mask)
 
     calibration = compute_calibration(working_size_px=(skeleton.shape[1], skeleton.shape[0]))
     avg_ridge_spacing_px = 1 / ridge_density if ridge_density > 0 else float("nan")
@@ -831,8 +897,16 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
         "suitable_for_matching": suitable_for_matching,
         "SSIM_raw_vs_enhanced": enhancement_metrics["SSIM"],
         "PSNR_raw_vs_enhanced_dB": enhancement_metrics["PSNR"],
-        "OCL_score": round(ocl_score, 4) if ocl_score is not None else None,
-        "LCS_score": round(lcs_score, 4),
+        "OCL_before": round(ocl_before, 4) if ocl_before is not None else None,
+        "OCL_after": round(ocl_after, 4) if ocl_after is not None else None,
+        "OCL_improvement": round(ocl_after - ocl_before, 4) if ocl_before is not None else None,
+        "LCS_before": round(lcs_before, 4),
+        "LCS_after": round(lcs_after, 4),
+        "LCS_improvement": round(lcs_after - lcs_before, 4),
+        "OCL_before_map": raw_coherence,
+        "OCL_after_map": after_coherence,
+        "LCS_before_map": lcs_before_map,
+        "LCS_after_map": lcs_after_map,
         "mm_per_px": round(calibration["mm_per_px_x"], 4),
         "avg_ridge_spacing_mm": round(avg_ridge_spacing_mm, 3),
         "image_size_mm": f"{image_width_mm:.1f} x {image_height_mm:.1f}",
@@ -865,7 +939,7 @@ def run_pipeline(raw_image, member_a_kwargs=None, member_b_kwargs=None,
         skeleton=c["skeleton"],
         roi_mask=b["roi_mask"],
         raw_gray_resized=raw_gray_resized,
-        enhanced_image=a["member_b_input"],
+        member_b_output=b["member_b_output"],
         orientation_coherence=b["orientation_coherence"],
         **d_kwargs,
     )

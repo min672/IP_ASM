@@ -216,59 +216,69 @@ if mode == "Single image":
 
 else:
     st.title("Batch Analysis")
-    st.caption("Upload multiple images at once. Name files so the alteration level "
-               "can be detected (e.g. containing 'Easy', 'Medium', 'Hard', or default 'Real').")
+    st.caption("Upload images into the correct category box below. Each box "
+               "supports multiple files at once.")
 
-    uploaded_files = st.file_uploader(
-        "Upload multiple fingerprint images",
-        type=["bmp", "png", "jpg", "jpeg", "tif", "tiff"],
-        accept_multiple_files=True,
-    )
+    CATEGORIES = ["Real", "Easy", "Medium", "Hard"]  # edit this list if your
+                                                       # dataset has 3 categories
+                                                       # instead of 4, e.g.
+                                                       # ["Real", "Altered-Easy", "Altered-Hard"]
 
-    def detect_level(filename):
-        name = filename.lower()
-        for level in ["easy", "medium", "hard"]:
-            if level in name:
-                return level.capitalize()
-        return "Real"
+    category_files = {}
+    tabs = st.tabs(CATEGORIES)
+    for tab, category in zip(tabs, CATEGORIES):
+        with tab:
+            category_files[category] = st.file_uploader(
+                f"Upload {category} images",
+                type=["bmp", "png", "jpg", "jpeg", "tif", "tiff"],
+                accept_multiple_files=True,
+                key=f"uploader_{category}",
+            )
 
-    if uploaded_files:
-        st.write(f"{len(uploaded_files)} files uploaded.")
+    total_files = sum(len(files or []) for files in category_files.values())
+    st.write(f"{total_files} files uploaded across {len(CATEGORIES)} categories.")
+    for category in CATEGORIES:
+        count = len(category_files[category] or [])
+        st.caption(f"- {category}: {count} file(s)")
 
+    if total_files > 0:
         if st.button("Run batch analysis"):
             rows = []
             progress = st.progress(0)
             status = st.empty()
             failures = []
+            processed = 0
 
-            for i, uploaded in enumerate(uploaded_files):
-                status.text(f"Processing {uploaded.name} ({i+1}/{len(uploaded_files)})...")
-                raw_image = load_image_from_upload(uploaded)
-                if raw_image is not None:
-                    try:
-                        result = run_pipeline(raw_image)
-                        d = result["member_d"]
-                        rows.append({
-                            "filename": uploaded.name,
-                            "alteration_level": detect_level(uploaded.name),
-                            "SSIM": d["SSIM_raw_vs_enhanced"],
-                            "PSNR_dB": d["PSNR_raw_vs_enhanced_dB"],
-                            "true_minutiae": d["true_minutiae"],
-                            "ridge_density": d["ridge_density"],
-                            "quality_score": d["quality_score"],
-                            "suitable_for_matching": d["suitable_for_matching"],
-                        })
-                    except Exception as e:
-                        failures.append((uploaded.name, str(e)))
-                progress.progress((i + 1) / len(uploaded_files))
+            for category, files in category_files.items():
+                for uploaded in (files or []):
+                    processed += 1
+                    status.text(f"Processing {uploaded.name} [{category}] ({processed}/{total_files})...")
+                    raw_image = load_image_from_upload(uploaded)
+                    if raw_image is not None:
+                        try:
+                            result = run_pipeline(raw_image)
+                            d = result["member_d"]
+                            rows.append({
+                                "filename": uploaded.name,
+                                "alteration_level": category,
+                                "SSIM": d["SSIM_raw_vs_enhanced"],
+                                "PSNR_dB": d["PSNR_raw_vs_enhanced_dB"],
+                                "true_minutiae": d["true_minutiae"],
+                                "ridge_density": d["ridge_density"],
+                                "quality_score": d["quality_score"],
+                                "suitable_for_matching": d["suitable_for_matching"],
+                            })
+                        except Exception as e:
+                            failures.append((uploaded.name, category, str(e)))
+                    progress.progress(processed / total_files)
 
             status.empty()
             progress.empty()
 
             if failures:
                 with st.expander(f"{len(failures)} image(s) failed to process"):
-                    for name, err in failures:
-                        st.write(f"- {name}: {err}")
+                    for name, category, err in failures:
+                        st.write(f"- [{category}] {name}: {err}")
 
             if rows:
                 df = pd.DataFrame(rows)

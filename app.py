@@ -64,6 +64,82 @@ def minutiae_overlay_figure(skeleton, true_minutiae, false_minutiae, title=""):
     return fig
 
 
+def show_minutiae_legend():
+    st.markdown(
+        "🔵 **Bifurcation (True)**&nbsp;&nbsp;&nbsp;"
+        "🔴 **Ridge Ending (True)**&nbsp;&nbsp;&nbsp;"
+        "🟡 **False (removed)**"
+    )
+
+
+def render_threshold_sidebar():
+    """
+    Sliders for every tunable stage, organised by member, so parameters
+    can be adjusted live instead of being hardcoded. Returns the four
+    kwargs dicts run_pipeline() expects.
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Pipeline Parameters")
+
+    with st.sidebar.expander("Member A - Preprocessing / Enhancement"):
+        denoising_method = st.radio("Denoising method", ["median", "gaussian"], index=0, key="a_denoise")
+        clahe_clip_limit = st.slider("CLAHE clip limit", 1.0, 6.0, 2.0, 0.1, key="a_clip")
+        clahe_tile = st.slider("CLAHE tile grid size", 2, 16, 8, 1, key="a_tile")
+        target_mean = st.slider("Target mean brightness", 80.0, 180.0, 128.0, 1.0, key="a_mean")
+        target_std = st.slider("Target contrast (std)", 20.0, 80.0, 50.0, 1.0, key="a_std")
+
+    with st.sidebar.expander("Member B - ROI / Orientation / Gabor"):
+        roi_window_size = st.slider("ROI window size", 5, 31, 15, 2, key="b_roiwin")
+        roi_texture_percentile = st.slider("ROI texture percentile", 0.0, 100.0, 50.0, 5.0, key="b_roipct")
+        orientation_sigma = st.slider("Orientation smoothing (sigma)", 1.0, 8.0, 4.0, 0.5, key="b_sigma")
+        minimum_coherence = st.slider("Minimum orientation coherence", 0.0, 0.6, 0.20, 0.01, key="b_coh")
+        gabor_kernel_size = st.slider("Gabor kernel size", 9, 41, 25, 2, key="b_gk")
+
+    with st.sidebar.expander("Member C - Threshold / Morphology"):
+        adaptive_block_size = st.slider("Adaptive threshold block size", 5, 31, 13, 2, key="c_block")
+        adaptive_C = st.slider("Adaptive threshold C", 0, 15, 5, 1, key="c_C")
+        morph_kernel_size = st.slider("Morphology kernel size", 1, 7, 3, 2, key="c_morph")
+
+    with st.sidebar.expander("Member D - Minutiae Filtering"):
+        min_ridge_length = st.slider("Min ridge length (spur rejection)", 1, 20, 6, 1, key="d_minlen")
+        min_pair_distance = st.slider("Min pair distance (bridge rejection)", 1, 30, 10, 1, key="d_pairdist")
+        boundary_margin = st.slider("Boundary margin", 1, 30, 10, 1, key="d_boundary")
+        max_neighbours = st.slider("Max neighbours (density filter)", 1, 15, 5, 1, key="d_maxneigh")
+        neighbour_radius = st.slider("Neighbour radius (density filter)", 5, 40, 15, 1, key="d_neighrad")
+        max_straightness = st.slider("Max straightness (1.0 = perfectly straight)", 0.80, 1.00, 0.97, 0.01, key="d_straight")
+        min_usable_minutiae = st.slider("Min usable minutiae (matching threshold)", 1, 40, 12, 1, key="d_minusable")
+
+    member_a_kwargs = dict(
+        denoising_method=denoising_method,
+        clahe_clip_limit=clahe_clip_limit,
+        clahe_tile_grid=(clahe_tile, clahe_tile),
+        target_mean=target_mean,
+        target_std=target_std,
+    )
+    member_b_kwargs = dict(
+        roi_window_size=roi_window_size,
+        roi_texture_percentile=roi_texture_percentile,
+        orientation_sigma=orientation_sigma,
+        minimum_coherence=minimum_coherence,
+        gabor_kernel_size=gabor_kernel_size,
+    )
+    member_c_kwargs = dict(
+        adaptive_block_size=adaptive_block_size,
+        adaptive_C=adaptive_C,
+        morph_kernel_size=morph_kernel_size,
+    )
+    member_d_kwargs = dict(
+        min_ridge_length=min_ridge_length,
+        min_pair_distance=min_pair_distance,
+        boundary_margin=boundary_margin,
+        max_neighbours=max_neighbours,
+        neighbour_radius=neighbour_radius,
+        max_straightness=max_straightness,
+        min_usable_minutiae=min_usable_minutiae,
+    )
+    return member_a_kwargs, member_b_kwargs, member_c_kwargs, member_d_kwargs
+
+
 def build_pdf_report(single_results=None, batch_df=None, batch_chart_png=None):
     """Build a simple PDF report (Extra Efforts: Reporting)."""
     pdf = FPDF()
@@ -134,12 +210,12 @@ def build_pdf_report(single_results=None, batch_df=None, batch_chart_png=None):
 
 st.sidebar.title("Fingerprint Enhancement System")
 mode = st.sidebar.radio("Mode", ["Single image", "Batch analysis (bulk upload)"])
-
-st.sidebar.markdown("---")
 st.sidebar.caption(
     "Pipeline: Preprocessing (A) -> Ridge Recovery (B) -> "
     "Ridge Structure Extraction (C) -> Feature Analysis (D)"
 )
+
+a_kwargs, b_kwargs, c_kwargs, d_kwargs = render_threshold_sidebar()
 
 
 # =============================================================================
@@ -157,7 +233,13 @@ if mode == "Single image":
         else:
             with st.spinner("Running full pipeline (Preprocessing -> Enhancement -> Skeleton -> Feature Analysis)..."):
                 try:
-                    result = run_pipeline(raw_image)
+                    result = run_pipeline(
+                        raw_image,
+                        member_a_kwargs=a_kwargs,
+                        member_b_kwargs=b_kwargs,
+                        member_c_kwargs=c_kwargs,
+                        member_d_kwargs=d_kwargs,
+                    )
                 except Exception as e:
                     st.error(f"Pipeline failed on this image: {e}")
                     result = None
@@ -177,10 +259,10 @@ if mode == "Single image":
                     show_gray(result["skeleton_255"], "4. Skeleton (Member C)")
 
                 st.subheader("Minutiae Detection (Member D)")
+                show_minutiae_legend()
                 fig = minutiae_overlay_figure(
                     result["skeleton_255"], d["true_minutiae_list"], d["false_minutiae_list"],
-                    title=f"{d['ridge_endings']} ending, {d['bifurcations']} bifurcation "
-                          f"(red/blue=true, yellow x=false)"
+                    title=f"{d['ridge_endings']} ending, {d['bifurcations']} bifurcation"
                 )
                 minutiae_png = fig_to_png_bytes(fig)
                 st.pyplot(fig, use_container_width=False)
@@ -256,7 +338,13 @@ else:
                     raw_image = load_image_from_upload(uploaded)
                     if raw_image is not None:
                         try:
-                            result = run_pipeline(raw_image)
+                            result = run_pipeline(
+                                raw_image,
+                                member_a_kwargs=a_kwargs,
+                                member_b_kwargs=b_kwargs,
+                                member_c_kwargs=c_kwargs,
+                                member_d_kwargs=d_kwargs,
+                            )
                             d = result["member_d"]
                             rows.append({
                                 "filename": uploaded.name,

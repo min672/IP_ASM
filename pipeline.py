@@ -716,6 +716,8 @@ def build_reliable_mask(roi_mask, orientation_coherence, min_coherence=0.25):
 def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
                       orientation_coherence=None, min_coherence=0.25,
                       min_ridge_length=6, min_pair_distance=10, boundary_margin=10,
+                      max_neighbours=5, neighbour_radius=15,
+                      max_straightness=0.97, straightness_trace_len=30,
                       min_usable_minutiae=12):
     """Full Member D stage: Part 1 (enhancement effectiveness) + Part 2 (matching
     suitability) + Image Calibration, given the full set of pipeline images."""
@@ -734,6 +736,10 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
         min_ridge_length=min_ridge_length,
         min_pair_distance=min_pair_distance,
         boundary_margin=boundary_margin,
+        max_neighbours=max_neighbours,
+        neighbour_radius=neighbour_radius,
+        max_straightness=max_straightness,
+        straightness_trace_len=straightness_trace_len,
     )
     true_minutiae = detection_result["minutiae"]
     true_coords = {(m["x"], m["y"]) for m in true_minutiae}

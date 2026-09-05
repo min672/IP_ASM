@@ -157,10 +157,10 @@ def build_pdf_report(single_results=None, batch_df=None, batch_chart_png=None):
         pdf.cell(0, 8, "Single-Image Analysis", ln=True)
         pdf.set_font("Helvetica", "", 10)
         rows = [
-            ("SSIM (raw vs enhanced)", d["SSIM_raw_vs_enhanced"]),
+            ("SSIM (raw vs Member B output)", d["SSIM_raw_vs_enhanced"]),
             ("PSNR (raw vs enhanced)", f"{d['PSNR_raw_vs_enhanced_dB']} dB"),
-            ("OCL - orientation certainty", d["OCL_score"]),
-            ("LCS - local clarity", d["LCS_score"]),
+            ("OCL before -> after", f"{d.get('OCL_before', 'N/A')} -> {d.get('OCL_after', 'N/A')}"),
+            ("LCS before -> after", f"{d.get('LCS_before', 'N/A')} -> {d.get('LCS_after', 'N/A')}"),
             ("Raw minutiae", d["raw_minutiae"]),
             ("True minutiae", d["true_minutiae"]),
             ("False minutiae removed", d["false_minutiae_removed"]),
@@ -271,8 +271,8 @@ if mode == "Single image":
 
                 st.subheader("Metrics Summary")
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("SSIM (raw vs enhanced)", d["SSIM_raw_vs_enhanced"])
-                m2.metric("PSNR (dB)", d["PSNR_raw_vs_enhanced_dB"])
+                m1.metric("SSIM (raw vs Member B output)", d["SSIM_raw_vs_enhanced"])
+                m2.metric("PSNR (raw vs Member B, dB)", d["PSNR_raw_vs_enhanced_dB"])
                 m3.metric("True minutiae", d["true_minutiae"])
                 m4.metric("Quality score", d["quality_score"])
 
@@ -283,14 +283,80 @@ if mode == "Single image":
                 m8.metric("Ridge spacing (mm)", d["avg_ridge_spacing_mm"])
 
                 m9, m10, m11, m12 = st.columns(4)
-                m9.metric("OCL (orientation certainty)", d["OCL_score"])
-                m10.metric("LCS (local clarity)", d["LCS_score"])
-                m11.metric("Ridge density", d["ridge_density"])
-                m12.metric("Calibrated size (mm)", d["image_size_mm"])
+                m9.metric("OCL before", d.get("OCL_before", "N/A"))
+                m10.metric("OCL after", d.get("OCL_after", "N/A"),
+                           delta=d.get("OCL_improvement"))
+                m11.metric("LCS before", d.get("LCS_before", "N/A"))
+                m12.metric("LCS after", d.get("LCS_after", "N/A"),
+                           delta=d.get("LCS_improvement"))
+
+                st.subheader("Before vs After — What Changed, and Where")
+
+                bar_fig, bar_ax = plt.subplots(figsize=(5, 3.5))
+                labels = ["OCL\n(orientation certainty)", "LCS\n(local clarity)"]
+                before_vals = [d.get("OCL_before", 0), d.get("LCS_before", 0)]
+                after_vals = [d.get("OCL_after", 0), d.get("LCS_after", 0)]
+                x = np.arange(len(labels))
+                width = 0.35
+                bar_ax.bar(x - width / 2, before_vals, width, label="Before (raw)", color="lightgray")
+                bar_ax.bar(x + width / 2, after_vals, width, label="After (Member B output)", color="steelblue")
+                bar_ax.set_ylim(0, 1)
+                bar_ax.set_xticks(x)
+                bar_ax.set_xticklabels(labels)
+                bar_ax.set_ylabel("Score (0-1, higher = better)")
+                bar_ax.legend(fontsize=8)
+                bar_ax.set_title("Quality metrics: before vs after", fontsize=10)
+                st.pyplot(bar_fig)
+                st.caption(
+                    "A taller blue bar than gray bar means the enhancement pipeline "
+                    "(Member A + B) genuinely improved that aspect of the fingerprint - "
+                    "not just changed how it looks."
+                )
+
+                st.markdown("**Where did orientation certainty (OCL) change?**")
+                ocl_cols = st.columns(2)
+                with ocl_cols[0]:
+                    fig_o1, ax_o1 = plt.subplots(figsize=(4, 4))
+                    im1 = ax_o1.imshow(d["OCL_before_map"], cmap="viridis", vmin=0, vmax=1)
+                    ax_o1.set_title("Before (raw)", fontsize=9)
+                    ax_o1.axis("off")
+                    st.pyplot(fig_o1)
+                with ocl_cols[1]:
+                    fig_o2, ax_o2 = plt.subplots(figsize=(4, 4))
+                    im2 = ax_o2.imshow(d["OCL_after_map"], cmap="viridis", vmin=0, vmax=1)
+                    ax_o2.set_title("After (Member B output)", fontsize=9)
+                    ax_o2.axis("off")
+                    st.pyplot(fig_o2)
+                st.caption(
+                    "Brighter (yellow) = orientation direction estimated with high confidence. "
+                    "Darker (purple) = unreliable region. Look for areas that turned brighter "
+                    "after processing - that's where Gabor recovery clarified the ridge direction."
+                )
+
+                st.markdown("**Where did local clarity (LCS) change?**")
+                lcs_cols = st.columns(2)
+                with lcs_cols[0]:
+                    fig_l1, ax_l1 = plt.subplots(figsize=(4, 4))
+                    ax_l1.imshow(d["LCS_before_map"], cmap="viridis", vmin=0, vmax=1)
+                    ax_l1.set_title("Before (raw)", fontsize=9)
+                    ax_l1.axis("off")
+                    st.pyplot(fig_l1)
+                with lcs_cols[1]:
+                    fig_l2, ax_l2 = plt.subplots(figsize=(4, 4))
+                    ax_l2.imshow(d["LCS_after_map"], cmap="viridis", vmin=0, vmax=1)
+                    ax_l2.set_title("After (Member B output)", fontsize=9)
+                    ax_l2.axis("off")
+                    st.pyplot(fig_l2)
+                st.caption(
+                    "Brighter (yellow) = ridge and valley pixels are clearly separated in that "
+                    "block. Darker (purple) = blurred, ridges and valleys blend together."
+                )
 
                 with st.expander("Full details / Image Calibration"):
                     st.json({k: v for k, v in d.items()
-                             if k not in ("true_minutiae_list", "false_minutiae_list")})
+                             if k not in ("true_minutiae_list", "false_minutiae_list",
+                                          "OCL_before_map", "OCL_after_map",
+                                          "LCS_before_map", "LCS_after_map")})
 
                 st.subheader("Export")
                 pdf_bytes = build_pdf_report(single_results=result)
@@ -359,8 +425,10 @@ else:
                                 "alteration_level": category,
                                 "SSIM": d["SSIM_raw_vs_enhanced"],
                                 "PSNR_dB": d["PSNR_raw_vs_enhanced_dB"],
-                                "OCL": d["OCL_score"],
-                                "LCS": d["LCS_score"],
+                                "OCL_before": d.get("OCL_before", None),
+                                "OCL_after": d.get("OCL_after", None),
+                                "LCS_before": d.get("LCS_before", None),
+                                "LCS_after": d.get("LCS_after", None),
                                 "true_minutiae": d["true_minutiae"],
                                 "ridge_density": d["ridge_density"],
                                 "quality_score": d["quality_score"],

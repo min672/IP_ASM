@@ -159,6 +159,8 @@ def build_pdf_report(single_results=None, batch_df=None, batch_chart_png=None):
         rows = [
             ("SSIM (raw vs enhanced)", d["SSIM_raw_vs_enhanced"]),
             ("PSNR (raw vs enhanced)", f"{d['PSNR_raw_vs_enhanced_dB']} dB"),
+            ("OCL - orientation certainty", d["OCL_score"]),
+            ("LCS - local clarity", d["LCS_score"]),
             ("Raw minutiae", d["raw_minutiae"]),
             ("True minutiae", d["true_minutiae"]),
             ("False minutiae removed", d["false_minutiae_removed"]),
@@ -280,6 +282,12 @@ if mode == "Single image":
                 m7.metric("Suitable for matching", "Yes" if d["suitable_for_matching"] else "No")
                 m8.metric("Ridge spacing (mm)", d["avg_ridge_spacing_mm"])
 
+                m9, m10, m11, m12 = st.columns(4)
+                m9.metric("OCL (orientation certainty)", d["OCL_score"])
+                m10.metric("LCS (local clarity)", d["LCS_score"])
+                m11.metric("Ridge density", d["ridge_density"])
+                m12.metric("Calibrated size (mm)", d["image_size_mm"])
+
                 with st.expander("Full details / Image Calibration"):
                     st.json({k: v for k, v in d.items()
                              if k not in ("true_minutiae_list", "false_minutiae_list")})
@@ -351,6 +359,8 @@ else:
                                 "alteration_level": category,
                                 "SSIM": d["SSIM_raw_vs_enhanced"],
                                 "PSNR_dB": d["PSNR_raw_vs_enhanced_dB"],
+                                "OCL": d["OCL_score"],
+                                "LCS": d["LCS_score"],
                                 "true_minutiae": d["true_minutiae"],
                                 "ridge_density": d["ridge_density"],
                                 "quality_score": d["quality_score"],

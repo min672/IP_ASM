@@ -555,9 +555,33 @@ def filter_false_minutiae(minutiae, skeleton, roi_mask=None,
     return [m for idx, m in enumerate(survivors) if idx not in to_remove]
 
 
-def detect_true_minutiae(skeleton, roi_mask=None, **filter_kwargs):
+def filter_by_local_density(minutiae, max_neighbours=5, neighbour_radius=15):
+    """
+    Reject minutiae sitting in an abnormally dense local cluster - a real
+    fingerprint has minutiae spread out, not packed into a small area.
+    A tight mesh/web artefact (from thresholding noise in a blurred
+    region) typically produces many minutiae within a small radius of
+    each other, which this rule catches directly.
+    """
+    survivors = []
+    for i, m in enumerate(minutiae):
+        neighbour_count = 0
+        for j, other in enumerate(minutiae):
+            if i == j:
+                continue
+            dist = np.hypot(m["x"] - other["x"], m["y"] - other["y"])
+            if dist <= neighbour_radius:
+                neighbour_count += 1
+        if neighbour_count <= max_neighbours:
+            survivors.append(m)
+    return survivors
+
+
+def detect_true_minutiae(skeleton, roi_mask=None, max_neighbours=5, neighbour_radius=15, **filter_kwargs):
     raw = extract_minutiae(skeleton)
     true_minutiae = filter_false_minutiae(raw, skeleton, roi_mask=roi_mask, **filter_kwargs)
+    true_minutiae = filter_by_local_density(true_minutiae, max_neighbours=max_neighbours,
+                                             neighbour_radius=neighbour_radius)
     return {
         "raw_count": len(raw),
         "true_count": len(true_minutiae),
@@ -613,14 +637,36 @@ def compute_calibration(working_size_px, original_size_px=ORIGINAL_SIZE_PX, orig
     }
 
 
+def build_reliable_mask(roi_mask, orientation_coherence, min_coherence=0.25):
+    """
+    Regions where Member B's orientation estimate was low-confidence are
+    unreliable for everything downstream (threshold, skeleton, minutiae).
+    Excluding them directly addresses the straight-line / mesh artefacts
+    that appear where adaptive thresholding was applied blindly to
+    low-coherence (near-background or blurred) areas.
+    """
+    reliable = (roi_mask > 0) & (orientation_coherence >= min_coherence)
+    return (reliable.astype(np.uint8)) * 255
+
+
 def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
+                      orientation_coherence=None, min_coherence=0.25,
                       min_ridge_length=6, min_pair_distance=10, boundary_margin=10,
                       min_usable_minutiae=12):
     """Full Member D stage: Part 1 (enhancement effectiveness) + Part 2 (matching
     suitability) + Image Calibration, given the full set of pipeline images."""
+    # Restrict analysis to regions Member B was actually confident about,
+    # not just "inside the ROI" - this filters out the straight-line and
+    # mesh artefacts that come from low-coherence regions being
+    # thresholded/skeletonized anyway.
+    if orientation_coherence is not None:
+        effective_mask = build_reliable_mask(roi_mask, orientation_coherence, min_coherence)
+    else:
+        effective_mask = roi_mask
+
     raw_minutiae = extract_minutiae(skeleton)
     detection_result = detect_true_minutiae(
-        skeleton, roi_mask=roi_mask,
+        skeleton, roi_mask=effective_mask,
         min_ridge_length=min_ridge_length,
         min_pair_distance=min_pair_distance,
         boundary_margin=boundary_margin,
@@ -690,6 +736,7 @@ def run_pipeline(raw_image, member_a_kwargs=None, member_b_kwargs=None,
         roi_mask=b["roi_mask"],
         raw_gray_resized=raw_gray_resized,
         enhanced_image=a["member_b_input"],
+        orientation_coherence=b["orientation_coherence"],
         **d_kwargs,
     )
 

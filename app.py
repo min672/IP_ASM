@@ -313,44 +313,52 @@ if mode == "Single image":
                     "not just changed how it looks."
                 )
 
-                st.markdown("**Where did orientation certainty (OCL) change?**")
-                ocl_cols = st.columns(2)
-                with ocl_cols[0]:
-                    fig_o1, ax_o1 = plt.subplots(figsize=(4, 4))
-                    im1 = ax_o1.imshow(d["OCL_before_map"], cmap="viridis", vmin=0, vmax=1)
-                    ax_o1.set_title("Before (raw)", fontsize=9)
-                    ax_o1.axis("off")
-                    st.pyplot(fig_o1)
-                with ocl_cols[1]:
-                    fig_o2, ax_o2 = plt.subplots(figsize=(4, 4))
-                    im2 = ax_o2.imshow(d["OCL_after_map"], cmap="viridis", vmin=0, vmax=1)
-                    ax_o2.set_title("After (Member B output)", fontsize=9)
-                    ax_o2.axis("off")
-                    st.pyplot(fig_o2)
-                st.caption(
-                    "Brighter (yellow) = orientation direction estimated with high confidence. "
-                    "Darker (purple) = unreliable region. Look for areas that turned brighter "
-                    "after processing - that's where Gabor recovery clarified the ridge direction."
-                )
+                required_map_keys = ("OCL_before_map", "OCL_after_map", "LCS_before_map", "LCS_after_map")
+                if not all(k in d for k in required_map_keys):
+                    st.warning(
+                        "This app is running an outdated pipeline.py that doesn't have the "
+                        "before/after heatmap data yet. Re-upload the latest pipeline.py to "
+                        "GitHub and reboot the app to see this section."
+                    )
+                else:
+                    st.markdown("**Where did orientation certainty (OCL) change?**")
+                    ocl_cols = st.columns(2)
+                    with ocl_cols[0]:
+                        fig_o1, ax_o1 = plt.subplots(figsize=(4, 4))
+                        im1 = ax_o1.imshow(d["OCL_before_map"], cmap="viridis", vmin=0, vmax=1)
+                        ax_o1.set_title("Before (raw)", fontsize=9)
+                        ax_o1.axis("off")
+                        st.pyplot(fig_o1)
+                    with ocl_cols[1]:
+                        fig_o2, ax_o2 = plt.subplots(figsize=(4, 4))
+                        im2 = ax_o2.imshow(d["OCL_after_map"], cmap="viridis", vmin=0, vmax=1)
+                        ax_o2.set_title("After (Member B output)", fontsize=9)
+                        ax_o2.axis("off")
+                        st.pyplot(fig_o2)
+                    st.caption(
+                        "Brighter (yellow) = orientation direction estimated with high confidence. "
+                        "Darker (purple) = unreliable region. Look for areas that turned brighter "
+                        "after processing - that's where Gabor recovery clarified the ridge direction."
+                    )
 
-                st.markdown("**Where did local clarity (LCS) change?**")
-                lcs_cols = st.columns(2)
-                with lcs_cols[0]:
-                    fig_l1, ax_l1 = plt.subplots(figsize=(4, 4))
-                    ax_l1.imshow(d["LCS_before_map"], cmap="viridis", vmin=0, vmax=1)
-                    ax_l1.set_title("Before (raw)", fontsize=9)
-                    ax_l1.axis("off")
-                    st.pyplot(fig_l1)
-                with lcs_cols[1]:
-                    fig_l2, ax_l2 = plt.subplots(figsize=(4, 4))
-                    ax_l2.imshow(d["LCS_after_map"], cmap="viridis", vmin=0, vmax=1)
-                    ax_l2.set_title("After (Member B output)", fontsize=9)
-                    ax_l2.axis("off")
-                    st.pyplot(fig_l2)
-                st.caption(
-                    "Brighter (yellow) = ridge and valley pixels are clearly separated in that "
-                    "block. Darker (purple) = blurred, ridges and valleys blend together."
-                )
+                    st.markdown("**Where did local clarity (LCS) change?**")
+                    lcs_cols = st.columns(2)
+                    with lcs_cols[0]:
+                        fig_l1, ax_l1 = plt.subplots(figsize=(4, 4))
+                        ax_l1.imshow(d["LCS_before_map"], cmap="viridis", vmin=0, vmax=1)
+                        ax_l1.set_title("Before (raw)", fontsize=9)
+                        ax_l1.axis("off")
+                        st.pyplot(fig_l1)
+                    with lcs_cols[1]:
+                        fig_l2, ax_l2 = plt.subplots(figsize=(4, 4))
+                        ax_l2.imshow(d["LCS_after_map"], cmap="viridis", vmin=0, vmax=1)
+                        ax_l2.set_title("After (Member B output)", fontsize=9)
+                        ax_l2.axis("off")
+                        st.pyplot(fig_l2)
+                    st.caption(
+                        "Brighter (yellow) = ridge and valley pixels are clearly separated in that "
+                        "block. Darker (purple) = blurred, ridges and valleys blend together."
+                    )
 
                 with st.expander("Full details / Image Calibration"):
                     st.json({k: v for k, v in d.items()

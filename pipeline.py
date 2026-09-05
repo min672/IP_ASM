@@ -781,6 +781,38 @@ def compute_lcs_score(image, roi_mask, block_size=16, return_map=False):
     return score
 
 
+def clean_roi_for_quality_metrics(roi_mask, open_kernel_size=21):
+    """
+    Strip thin, spike-shaped protrusions from the ROI mask before using
+    it for OCL/LCS quality metrics.
+
+    Why: ROI extraction's convex-hull step can get pulled into a thin
+    triangular spike by a stray noise blob near the fingerprint edge
+    (see Member B's extract_roi). A straight edge like that spike
+    produces an artificially CONSISTENT gradient direction, so OCL can
+    show it as high-confidence "reliable" even though it isn't real
+    ridge tissue - a false positive that a low-coherence threshold
+    alone cannot catch (the problem isn't low coherence, it's fake
+    high coherence).
+
+    Morphological opening with a moderately large kernel removes thin
+    protrusions (much narrower than the kernel) while leaving the main,
+    genuinely round fingerprint blob intact - the same principle Member
+    B already uses for its own mask cleanup, applied more aggressively
+    here purely for quality-metric purposes (NOT used for minutiae
+    boundary exclusion, which has its own dedicated filters).
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_kernel_size, open_kernel_size))
+    cleaned = cv2.morphologyEx(roi_mask, cv2.MORPH_OPEN, kernel)
+
+    # safety net: if opening wiped out almost everything (e.g. a very
+    # small genuine ROI), fall back to the original mask rather than
+    # analysing quality on an empty region
+    if np.mean(cleaned > 0) < 0.05 * max(np.mean(roi_mask > 0), 1e-6):
+        return roi_mask
+    return cleaned
+
+
 # --- Image Calibration ------------------------------------------------------
 ORIGINAL_DPI = 500                 # SOCOFing capture spec (Shehu et al., 2018)
 ORIGINAL_SIZE_PX = (96, 103)       # SOCOFing native scan size (width, height)
@@ -859,24 +891,32 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, member_b_output,
     quality_score = compute_quality_score(ridge_density, detection_result["true_count"])
     suitable_for_matching = detection_result["true_count"] >= min_usable_minutiae
 
-    enhancement_metrics = evaluate_enhancement(raw_gray_resized, member_b_output, roi_mask=roi_mask)
+    # Quality metrics (SSIM, PSNR, OCL, LCS) use a geometrically CLEANED
+    # roi_mask - strips thin convex-hull spike artefacts that would
+    # otherwise show up as falsely "high confidence" straight edges (see
+    # clean_roi_for_quality_metrics docstring). Minutiae detection above
+    # intentionally keeps using the original roi_mask + its own
+    # dedicated straightness/density filters instead.
+    quality_roi = clean_roi_for_quality_metrics(roi_mask)
+
+    enhancement_metrics = evaluate_enhancement(raw_gray_resized, member_b_output, roi_mask=quality_roi)
 
     # --- OCL and LCS: measured BEFORE (raw) and AFTER (Member B's final
     # Gabor-recovered output) so preprocessing+recovery effectiveness can
     # be judged the same way as SSIM/PSNR, not just reported as a single
     # post-hoc number. Maps are kept for spatial before/after visualization.
-    lcs_before, lcs_before_map = compute_lcs_score(raw_gray_resized, roi_mask, return_map=True)
-    lcs_after, lcs_after_map = compute_lcs_score(member_b_output, roi_mask, return_map=True)
+    lcs_before, lcs_before_map = compute_lcs_score(raw_gray_resized, quality_roi, return_map=True)
+    lcs_after, lcs_after_map = compute_lcs_score(member_b_output, quality_roi, return_map=True)
 
     # "before" = orientation estimated fresh on the raw image
     # "after"  = orientation estimated fresh on Member B's final output,
     # so the comparison reflects whether Gabor recovery genuinely
     # increased orientation certainty, not just the pre-Gabor estimate
     # that was used to PARAMETERISE the Gabor filter in the first place.
-    _, raw_coherence = estimate_orientation(raw_gray_resized, roi_mask, sigma=4.0)
-    ocl_before = compute_ocl_score(raw_coherence, roi_mask)
-    _, after_coherence = estimate_orientation(member_b_output, roi_mask, sigma=4.0)
-    ocl_after = compute_ocl_score(after_coherence, roi_mask)
+    _, raw_coherence = estimate_orientation(raw_gray_resized, quality_roi, sigma=4.0)
+    ocl_before = compute_ocl_score(raw_coherence, quality_roi)
+    _, after_coherence = estimate_orientation(member_b_output, quality_roi, sigma=4.0)
+    ocl_after = compute_ocl_score(after_coherence, quality_roi)
 
     calibration = compute_calibration(working_size_px=(skeleton.shape[1], skeleton.shape[0]))
     avg_ridge_spacing_px = 1 / ridge_density if ridge_density > 0 else float("nan")

@@ -685,6 +685,61 @@ def evaluate_enhancement(image_a, image_b):
     }
 
 
+def compute_ocl_score(orientation_coherence, roi_mask):
+    """
+    Orientation Certainty Level (OCL)-style quality score, 0-1.
+    Directly reuses Member B's orientation_coherence (structure-tensor
+    based - same mathematical family as the eigenvalue-ratio OCL used
+    in fingerprint quality literature, e.g. Lim et al.) rather than
+    recomputing anything from scratch. Higher = orientation estimate
+    is more reliable across the fingerprint.
+    """
+    values = orientation_coherence[roi_mask > 0]
+    if values.size == 0:
+        return 0.0
+    return float(np.mean(values))
+
+
+def compute_lcs_score(image, roi_mask, block_size=16):
+    """
+    Local Clarity Score (LCS)-style quality score, 0-1.
+    Simplified from Chen et al.'s block-wise ridge/valley separation
+    method: for each block, Otsu-threshold it into two classes (ridge
+    vs valley), then measure how well-separated those two classes are
+    (between-class variance / total variance - the same criterion Otsu
+    itself maximizes). A clear ridge/valley pattern gives a high,
+    well-separated score; a blurred/noisy block gives a low score
+    because the two "classes" barely differ from the overall mean.
+    """
+    h, w = image.shape
+    clarity_values = []
+    for y in range(0, h - block_size + 1, block_size):
+        for x in range(0, w - block_size + 1, block_size):
+            block = image[y:y + block_size, x:x + block_size]
+            block_roi = roi_mask[y:y + block_size, x:x + block_size]
+            if np.mean(block_roi > 0) < 0.5:
+                continue
+            overall_var = float(np.var(block.astype(np.float64)))
+            if overall_var < 1e-6:
+                continue
+            _, otsu_result = cv2.threshold(block, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            ridge_pixels = block[otsu_result == 0]
+            valley_pixels = block[otsu_result == 255]
+            if ridge_pixels.size == 0 or valley_pixels.size == 0:
+                continue
+            n_ridge, n_valley = ridge_pixels.size, valley_pixels.size
+            n_total = n_ridge + n_valley
+            overall_mean = float(block.mean())
+            between_var = (
+                n_ridge * (float(ridge_pixels.mean()) - overall_mean) ** 2
+                + n_valley * (float(valley_pixels.mean()) - overall_mean) ** 2
+            ) / n_total
+            clarity_values.append(between_var / overall_var)
+    if not clarity_values:
+        return 0.0
+    return float(np.clip(np.mean(clarity_values), 0.0, 1.0))
+
+
 # --- Image Calibration ------------------------------------------------------
 ORIGINAL_DPI = 500                 # SOCOFing capture spec (Shehu et al., 2018)
 ORIGINAL_SIZE_PX = (96, 103)       # SOCOFing native scan size (width, height)
@@ -754,6 +809,9 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
 
     enhancement_metrics = evaluate_enhancement(raw_gray_resized, enhanced_image)
 
+    ocl_score = compute_ocl_score(orientation_coherence, roi_mask) if orientation_coherence is not None else None
+    lcs_score = compute_lcs_score(enhanced_image, roi_mask)
+
     calibration = compute_calibration(working_size_px=(skeleton.shape[1], skeleton.shape[0]))
     avg_ridge_spacing_px = 1 / ridge_density if ridge_density > 0 else float("nan")
     avg_ridge_spacing_mm = avg_ridge_spacing_px * calibration["mm_per_px_x"]
@@ -773,6 +831,8 @@ def analyse_member_d(skeleton, roi_mask, raw_gray_resized, enhanced_image,
         "suitable_for_matching": suitable_for_matching,
         "SSIM_raw_vs_enhanced": enhancement_metrics["SSIM"],
         "PSNR_raw_vs_enhanced_dB": enhancement_metrics["PSNR"],
+        "OCL_score": round(ocl_score, 4) if ocl_score is not None else None,
+        "LCS_score": round(lcs_score, 4),
         "mm_per_px": round(calibration["mm_per_px_x"], 4),
         "avg_ridge_spacing_mm": round(avg_ridge_spacing_mm, 3),
         "image_size_mm": f"{image_width_mm:.1f} x {image_height_mm:.1f}",
